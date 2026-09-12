@@ -30,8 +30,10 @@ out of the game's `.DAT` archives through its own RLE decoder.*
 
 | | |
 |---|---|
-| ![The title card](docs/img/title.png) | ![Sign in](docs/img/signin.png) |
-| The title card, after the intro plays out | Shady Glen Technology Center: Start Game, New Player, Cancel |
+| ![Morty's airship over the Technology Center](docs/img/airship.png) | ![The title card](docs/img/title.png) |
+| Later in the same cutscene: the airship over the Technology Center roof | The title card, after the intro plays out |
+| ![Sign in](docs/img/signin.png) | ![Morty, mid-animation](docs/img/intro2.png) |
+| Shady Glen Technology Center: Start Game, New Player, Cancel | The same lab a few seconds on -- the robots and Morty's arm have moved |
 
 ### Where it works and where it doesn't
 
