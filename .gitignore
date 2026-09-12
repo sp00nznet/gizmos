@@ -1,0 +1,66 @@
+# Build artifacts
+build/
+out/
+cmake-build-*/
+*.obj
+*.o
+*.lib
+*.exe
+*.dll
+*.pdb
+*.ilk
+*.exp
+
+# IDE
+.vs/
+.vscode/
+*.user
+*.suo
+CMakeSettings.json
+CMakeUserPresets.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Scratch / regeneratable analysis output
+work/
+*.json.bak
+
+# Generated recompiled code
+src/recomp/gen/
+src/recomp/imports_stub.c
+
+# Extracted assets (regenerate from your own copy)
+extracted/
+
+# --- Original retail game files: NOT redistributed in this repo ---
+# Gizmos & Gadgets! (c) 1993-1996 The Learning Company. Long out of print, but
+# copyright most likely still subsists (the TLC -> SoftKey -> Mattel ->
+# Riverdeep -> HMH chain). Keep ALL original binaries and assets local-only.
+# Bring your own CD and drop its contents into original/ yourself.
+original/
+*.EXE
+*.DLL
+*.RSC
+*.GRP
+*.MPS
+*.SMK
+*.MID
+*.WAV
+*.CAB
+*.DAT
+*.ISO
+*.iso
+*.Z
+
+# The linker map is a shipped original file too (this disc ships none)
+*.MAP
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
