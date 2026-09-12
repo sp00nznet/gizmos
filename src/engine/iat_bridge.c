@@ -833,13 +833,32 @@ static void bridge_WinGCreateDC(void) {
     esp += 4;
 }
 
-/* WinGRecommendDIBFormat(BITMAPINFO*) -> BOOL. Top-down 8bpp is what the game
- * gets on every machine, so the answer never varies. */
+/*
+ * WinGRecommendDIBFormat(BITMAPINFO*) -> BOOL. The caller reads the SIGN of
+ * biHeight and nothing else: this is WinG saying which way up the display would
+ * rather be handed its pixels.
+ *
+ * It has to be +1 here, not Neptune's -1.
+ *
+ * The answer does not just describe the bitmap, it picks which of the game's
+ * two blitters runs. sub_00402F5x compares this against -1 and installs either
+ * a top-down set (row stride +512, row address base + y*512, sub_00402984) or a
+ * bottom-up set (stride -512, base + (383-y)*512, sub_0040280E, stepping
+ * `sub edi, 0x200` per row). Recommend top-down and the game still chose its
+ * bottom-up blitter, so the picture was drawn upside down through a top-down
+ * DIB and came out as a sheared wedge.
+ *
+ * Bottom-up is also what WinG really answered on the 8bpp displays this game
+ * shipped for; it is the DIB orientation Windows has called native since 3.0.
+ *
+ * GG_TOPDOWN=1 puts it back, for looking at the other blitter.
+ */
 static void bridge_WinGRecommendDIBFormat(void) {
     u32 p = ARG(1);
+    int topdown = GetEnvironmentVariableA("GG_TOPDOWN", NULL, 0) != 0;
     memset((void *)(uintptr_t)ADDR(p), 0, sizeof(BITMAPINFOHEADER));
     MEM32(p + 0)  = sizeof(BITMAPINFOHEADER);   /* biSize */
-    MEM32(p + 8)  = (u32)-1;                    /* biHeight: -1 == top-down */
+    MEM32(p + 8)  = topdown ? (u32)-1 : 1;      /* biHeight: sign is the answer */
     MEM16(p + 12) = 1;                          /* biPlanes */
     MEM16(p + 14) = 8;                          /* biBitCount */
     MEM32(p + 16) = BI_RGB;
@@ -929,16 +948,20 @@ static void bridge_WinGCreateBitmap(void) {
     if (hdc && !wing_for_dc(hdc)) SelectObject(hdc, b->bmp);
 
     /*
-     * WinG hands back the TOPMOST scanline, not the start of the buffer. For a
-     * bottom-up DIB those are different ends: row 0 lives at the far end and
-     * the game walks backwards through memory as y increases.
+     * The START of the pixel data, both ways round -- which is what real WinG
+     * returns, because it is simply the pointer CreateDIBSection gave it.
      *
-     * Getting this wrong is quiet until it is not. The buffer used to come from
-     * our own heap with megabytes below it, so writing above row 0 just
-     * scribbled on the heap; once it moved to a mapping of exactly the right
-     * size, the same write landed one row before the base and faulted.
+     * Neptune's shim moved this to the last row for a bottom-up DIB, on the
+     * reasoning that WinG hands back the topmost scanline. Neptune only ever
+     * asked for top-down surfaces, so that branch never ran there; here it did,
+     * and it double-counted. This game's bottom-up row address helper
+     * (sub_00402518) computes `base + (383 - y) * 512` for itself, so handing it
+     * a base that already had (h-1)*stride added put every row a whole screen
+     * past the end of the picture -- inside the slack, faulting nothing, drawing
+     * nothing, and leaving a perfectly black 512x384 rectangle on screen with a
+     * fully populated palette.
      */
-    b->top = raw_h > 0 ? b->bits + (u32)((h - 1) * stride) : b->bits;
+    b->top = b->bits;
 
     if (ppbits) MEM32(ppbits) = b->top;
     fprintf(stderr, "    WinG: bitmap %d, %dx%d %s at 0x%08X, top row 0x%08X, %u bytes slack each side\n",
@@ -1005,6 +1028,15 @@ static void bridge_WinGSetDIBColorTable(void) {
         if (!prev) continue;
         SetDIBColorTable(scratch, start, n, (const RGBQUAD *)&g_wing_pal[start]);
         SelectObject(scratch, prev);
+    }
+    /* How many of the 256 entries are not black. A 1996 title screen fades in
+     * by ramping this table up from zero, so "the picture is black" and "the
+     * fade has not started" look identical on screen and different here. */
+    {
+        int nz = 0;
+        for (i = 0; i < 256; i++) if (g_wing_pal[i] & 0x00FFFFFFu) nz++;
+        fprintf(stderr, "    WinG: SetDIBColorTable(%u..%u) -> %d of 256 entries lit\n",
+                start, start + n - 1, nz);
     }
     eax = n;
     esp += 4 + 16;

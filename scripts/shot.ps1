@@ -32,9 +32,14 @@ public class Shot {
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
     [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RECT r);
-    [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint flags);
+    [DllImport("user32.dll")] public static extern IntPtr GetDC(IntPtr h);
+    [DllImport("user32.dll")] public static extern int ReleaseDC(IntPtr h, IntPtr dc);
+    [DllImport("gdi32.dll")] public static extern bool BitBlt(IntPtr d, int x, int y, int w, int h, IntPtr s, int sx, int sy, uint rop);
+    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+    [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
     [DllImport("user32.dll")] public static extern IntPtr PostMessageA(IntPtr h, uint m, IntPtr w, IntPtr l);
     [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
+    [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }
 }
 "@
 
@@ -59,7 +64,17 @@ function Get-GameWindow {
         param($h, $lp)
         $wpid = 0
         [void][Shot]::GetWindowThreadProcessId($h, [ref]$wpid)
-        if ($ids -contains $wpid -and $script:found -eq [IntPtr]::Zero) { $script:found = $h }
+        # Not just the first window this process owns: it also creates a
+        # hidden 'SoundWindow' as an MCI notification sink, and that one has a
+        # client rect of -2147483648 square. Take the first VISIBLE window with
+        # a real client area instead.
+        if ($ids -contains $wpid -and $script:found -eq [IntPtr]::Zero) {
+            $r = New-Object Shot+RECT
+            if ([Shot]::IsWindowVisible($h) -and [Shot]::GetClientRect($h, [ref]$r) `
+                -and $r.Right -gt 0 -and $r.Bottom -gt 0) {
+                $script:found = $h
+            }
+        }
         return $true
     }
     [void][Shot]::EnumWindows($cb, [IntPtr]::Zero)
@@ -67,25 +82,42 @@ function Get-GameWindow {
 }
 
 function Save-Shot([IntPtr]$hwnd, [string]$path) {
-    # The CLIENT area, not the whole window: the game blits its 640x400 picture
-    # to client (0,0), so a pixel in the image is exactly a coordinate to click.
+    # Read the window's OWN DC, not the screen and not PrintWindow.
+    #
+    # PrintWindow asks the window to redraw itself, and this game never redraws:
+    # it takes a DC with GetDC once a frame and blits its dirty rectangles
+    # straight to it, outside WM_PAINT entirely. Asked to print itself it fills
+    # the background and returns, so every shot came back flat grey.
+    #
+    # Grabbing the screen instead needs the window on top, and
+    # SetForegroundWindow from a background script does not get it there -- the
+    # first shot that way photographed the terminal that launched it.
+    #
+    # A window DC under DWM reads the window's own redirection surface, which
+    # holds exactly the pixels the game blitted, occluded or not.
     $c = New-Object Shot+RECT
     [void][Shot]::GetClientRect($hwnd, [ref]$c)
     $w = $c.Right; $h = $c.Bottom
     if ($w -le 0 -or $h -le 0) { Write-Output "empty window"; return }
 
+    $src = [Shot]::GetDC($hwnd)
+    if ($src -eq [IntPtr]::Zero) { Write-Output "no window DC"; return }
+
     $bmp = New-Object System.Drawing.Bitmap($w, $h)
     $g = [System.Drawing.Graphics]::FromImage($bmp)
-    $hdc = $g.GetHdc()
-    [void][Shot]::PrintWindow($hwnd, $hdc, 1)     # PW_CLIENTONLY
-    $g.ReleaseHdc($hdc)
+    $dst = $g.GetHdc()
+    [void][Shot]::BitBlt($dst, 0, 0, $w, $h, $src, 0, 0, 0x00CC0020)   # SRCCOPY
+    $g.ReleaseHdc($dst)
     $g.Dispose()
+    [void][Shot]::ReleaseDC($hwnd, $src)
 
     $bmp.Save((Join-Path $root $path), [System.Drawing.Imaging.ImageFormat]::Png)
     Write-Output "$path  ${w}x${h} (client)"
     $bmp.Dispose()
 }
 
+
+Get-Process gizmos -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 
 $p = Start-Process -FilePath "work\gizmos.exe" `
                    -ArgumentList "original\SSGWINCD\SSGWIN32.EXE" `
@@ -162,4 +194,9 @@ foreach ($step in $plan) {
     }
 }
 
-$p | Stop-Process -Force -ErrorAction SilentlyContinue
+# Kill the whole game, not just the launcher. The exe relaunches itself (see
+# premap.c) and Stop-Process on the handle we hold leaves the CHILD running --
+# which then owns the window, so the NEXT run's FindWindowA single-instance
+# check finds it and the game exits before it draws anything. That reads as
+# "the build broke", and it is not.
+Get-Process gizmos -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
