@@ -1,0 +1,6 @@
+{
+  "name": "Super Solvers: Midnight Rescue!",
+  "publisher": "The Learning Company, 1989; Windows CD rerelease 1997-11-11",
+  "exe": "original/SSRWINCD/SSRWIN32.EXE",
+  "disc": "the whole CD, so that SSRWINCD is under original/"
+}

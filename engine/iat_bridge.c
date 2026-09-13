@@ -464,6 +464,19 @@ static const struct { const char *dll, *name; int argc; } g_passthrough[] = {
     {"kernel32", "lstrcatA",               2},
     {"kernel32", "lstrcmpA",               2},
     {"kernel32", "lstrcpyA",               2},
+
+    /* --- Midnight Rescue's and Spellbound's additions ---
+     *
+     * Both are 1997 rereleases, and their discs carry a 32-bit build the
+     * earlier pressings did not. Between them they wanted six things nothing
+     * before had: installable fonts, a tick count, a beep, an environment
+     * variable, and the popup owner. */
+    {"gdi32",    "AddFontResourceA",        1},
+    {"gdi32",    "RemoveFontResourceA",     1},
+    {"kernel32", "GetEnvironmentVariableA", 3},
+    {"kernel32", "GetTickCount",            0},
+    {"user32",   "MessageBeep",             1},
+    {"user32",   "GetLastActivePopup",      1},
 };
 
 /* ===================================================================
@@ -1873,7 +1886,47 @@ static void bridge_DialogBoxParamA(void) {
 
 /* Callback-taking APIs we have not needed yet. Loud, so the first run that
  * reaches one says so instead of quietly doing nothing. */
-static void bridge_EnumThreadWindows(void) { fprintf(stderr, "    EnumThreadWindows: unimplemented\n"); eax = 0; esp += 4 + 12; }
+/* ===================================================================
+ * Window enumeration
+ *
+ * EnumWindows and EnumThreadWindows hand the callback a window and an LPARAM
+ * and stop when it answers FALSE. The callback is a VA in lifted code, so it
+ * goes through a trampoline like the window and dialog procedures -- the third
+ * one, and the pattern is the same every time.
+ *
+ * EnumThreadWindows was stubbed to "0 windows" for two games that never called
+ * it. Spellbound does call EnumWindows, and answering "there are none" to a
+ * game looking for its own previous instance is not the neutral reply it looks
+ * like -- it is a specific and wrong one.
+ * =================================================================== */
+
+static u32 g_enum_proc;
+
+static BOOL CALLBACK gg_enumproc(HWND h, LPARAM l) {
+    recomp_func_t fn = g_enum_proc ? recomp_lookup(g_enum_proc) : NULL;
+    if (!fn) return FALSE;
+    /* stdcall, right to left: the callee pops both. */
+    PUSH32(esp, (u32)l);
+    PUSH32(esp, (u32)(uintptr_t)h);
+    PUSH32(esp, RECOMP_RETADDR);
+    fn();
+    return (BOOL)eax;
+}
+
+/* Both take the callback second-to-last and the LPARAM last, so one body does
+ * for either -- only the argument count and which API runs differ. */
+static void enum_windows(int thread_form) {
+    u32 saved = g_enum_proc;          /* these can nest */
+    g_enum_proc = thread_form ? ARG(2) : ARG(1);
+    if (thread_form)
+        eax = (u32)EnumThreadWindows(ARG(1), gg_enumproc, (LPARAM)(LONG)ARG(3));
+    else
+        eax = (u32)EnumWindows(gg_enumproc, (LPARAM)(LONG)ARG(2));
+    g_enum_proc = saved;
+}
+
+static void bridge_EnumWindows(void)       { enum_windows(0); esp += 4 + 8; }
+static void bridge_EnumThreadWindows(void) { enum_windows(1); esp += 4 + 12; }
 
 
 /* ===================================================================
@@ -2157,6 +2210,7 @@ void setup_iat_bridges(void) {
     bind("EndPaint",                 bridge_EndPaint,                 NULL, 2);
     bind("DialogBoxParamA",          bridge_DialogBoxParamA,          NULL, 5);
     bind("EnumThreadWindows",        bridge_EnumThreadWindows,        NULL, 3);
+    bind("EnumWindows",              bridge_EnumWindows,              NULL, 2);
 
     bind("waveOutOpen",              bridge_waveOutOpen,              NULL, 6);
     bind("waveOutPrepareHeader",     bridge_waveOutPrepareHeader,     NULL, 3);
