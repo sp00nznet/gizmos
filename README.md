@@ -18,6 +18,8 @@ which is the same engine again and where most of this runtime started.
 | | Binary | Status |
 |---|---|---|
 | **Gizmos & Gadgets!** (1993 / CD 1996) | `SSGWIN32.EXE`, 284 KB code | **Plays its whole attract sequence** — the intro, animated, with music and speech; the title card; sign-in, with working buttons |
+| **Treasure Mountain!** (1990 / CD 1996) | `TMTWIN32.EXE`, 123 KB code | **Draws the mountain**, in full colour, after its comet opening. Needed *no* engine changes at all |
+| **Treasure Cove!** (1992 / CD 1996) | `TCVWIN32.EXE`, 131 KB code | **Draws its title screen.** Colours posterised — see below |
 | **Treasure MathStorm!** (1992 / CD 1996) | `TMS32.EXE`, 290 KB code | **Boots and runs** — loads its archives, creates both WinG surfaces, finds its music. Nothing on screen yet |
 
 ![Morty Maxwell's lab, the opening scene](docs/img/intro.png)
@@ -32,6 +34,8 @@ come out of the game's `.DAT` archives through its own RLE decoder.*
 | Later in the same cutscene: the airship over the Technology Center roof | The title card, after the intro plays out |
 | ![Sign in](docs/img/signin.png) | ![Morty, mid-animation](docs/img/intro2.png) |
 | Shady Glen Technology Center: Start Game, New Player, Cancel | The same lab a few seconds on — the robots and Morty's arm have moved |
+| ![Treasure Mountain](docs/img/treasuremountain.png) | ![Treasure Cove](docs/img/treasurecove.png) |
+| Treasure Mountain, which needed no engine work whatsoever | Treasure Cove's title screen: right in every shape, wrong in its colours |
 
 ### Gizmos & Gadgets
 
@@ -59,43 +63,59 @@ drive. That is where the next work is.
 
 ### The lift
 
-| | Gizmos & Gadgets | Treasure MathStorm |
-|---|---:|---:|
-| Functions recovered | 1,998 | 4,769 |
-| Instructions decoded | 121,459 | 314,026 |
-| Code bytes covered | **99.07%** | **99.98%** |
-| Lines of generated C | 241,909 | 628,392 |
-| Lift errors | 0 | 0 |
-| Imports bridged | **154 of 154** | **158 of 158** |
+| | Gizmos & Gadgets | Treasure Mountain | Treasure Cove | Treasure MathStorm |
+|---|---:|---:|---:|---:|
+| Code bytes | 284 KB | 123 KB | 131 KB | 290 KB |
+| Lines of generated C | 241,909 | 163,886 | 155,076 | 628,392 |
+| Lift errors | 0 | 0 | 0 | 0 |
+| Imports bridged | 154/154 | **135/135** | 134/134 | 158/158 |
 
-MathStorm's function count is inflated and its line count with it: recursive
-descent over-merges badly on that binary, and several of its "functions" span
-most of the code section, so the same instructions get lifted into more than one
-of them. It compiles and runs; it is about three times the C it should be.
+Treasure Mountain needed **nothing new at all**: every one of its 135 imports
+was already in the shared table, put there by the three games before it. That is
+the whole argument for one engine rather than four.
 
-### Not this engine
+MathStorm's line count is inflated: recursive descent over-merges badly on that
+binary, and several of its "functions" span most of the code section, so the
+same instructions get lifted into more than one of them. It compiles and runs;
+it is about three times the C it should be.
 
-Three more Super Solvers titles sit on the same Win3x disc set and are **16-bit
-NE**, not Win32 — a different pipeline entirely (pcrecomp's `ne/` and `lift16`,
-as used for Catz, Microsoft Bob and El-Fish):
+### The rest of the corpus
 
-Midnight Rescue! (22 segments), OutNumbered! (26) and Spellbound! (21). Each
-imports only GDI, KERNEL, MMSYSTEM, TOOLHELP and USER, and none has a 32-bit twin
-on its disc. Treasure Mountain! and Treasure Galaxy! ship no CD image at all.
+| | Format | Why not |
+|---|---|---|
+| Midnight Rescue! | 16-bit NE, 22 segments | No 32-bit build on its disc |
+| OutNumbered! | 16-bit NE, 26 segments | No 32-bit build on its disc |
+| Spellbound! | 16-bit NE, 21 segments | No 32-bit build on its disc |
+| Treasure Galaxy! | 16-bit NE (Borland 4.02 RTL) | Both executables on the disc are NE |
+| Mission T.H.I.N.K. (1999) | Win32, 852 KB code, 241 imports | **Threads.** `CreateThread`, `TlsAlloc`, mutexes and events — the lifted model has one global register set, so a second thread running lifted code corrupts it. That is pcrecomp's reentrant `recomp32_cpu` variant, not this runtime |
+
+The four NE titles are a different pipeline entirely (pcrecomp's `ne/` and
+`lift16`, as used for Catz, Microsoft Bob and El-Fish), not a missing feature
+here. Each imports only GDI, KERNEL, MMSYSTEM, TOOLHELP and USER.
+
+T.H.I.N.K. is the one genuinely open question. It is the same family — Borland
+2.25, WinG, an `.INI` beside the executable — but three years later and twice
+the size, with GDI regions, fonts, file dialogs and a thread model this runtime
+cannot host.
 
 ## The engine underneath
 
-Operation Neptune, Gizmos & Gadgets and Treasure MathStorm are the same program
-wearing different art. All three are Borland C++ PE32 builds for Win32s, all
-three draw through **WING32.DLL**, all three keep their settings in an `.INI`
-next to the executable, and all three read their assets out of flat archives on
-the CD by hand.
+Operation Neptune and all four titles here are the same program wearing
+different art. Every one is a Borland C++ PE32 build for Win32s, draws through
+**WING32.DLL**, keeps its settings in an `.INI` next to the executable, and
+reads its assets off the CD by hand.
 
-That is the whole point of doing them in order. Neptune took a full engine-layer
-bring-up; Gizmos & Gadgets reused it, and the work reduced to the differences
-below. MathStorm then reused *that* and was answering all 158 of its imports on
-the first run — its differences are Miles instead of waveOut and MCI, Smacker
-cutscenes, and WinG linked statically rather than loaded by hand.
+That is the whole point of doing them in order, and the curve is the argument:
+
+| | New imports to bridge | New engine work |
+|---|---:|---|
+| Operation Neptune | 139 | the whole runtime |
+| Gizmos & Gadgets | 43 | WinG by ordinal, two surfaces, dialogs, the MIDI probe |
+| Treasure MathStorm | 54 | Miles, Smacker by ordinal, WinG statically linked |
+| Treasure Cove | 23 | `wsprintfA`, `LocalAlloc`, `RealizePalette` reaching the DIB |
+| **Treasure Mountain** | **0** | **none** |
+
+Gizmos & Gadgets against Neptune:
 
 Gizmos & Gadgets against Neptune:
 

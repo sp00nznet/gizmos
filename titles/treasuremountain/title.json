@@ -1,0 +1,6 @@
+{
+  "name": "Super Solvers: Treasure Mountain!",
+  "publisher": "The Learning Company, 1990; Windows CD re-release 1996 (v2.01)",
+  "exe": "original/DATA/TMTWIN32.EXE",
+  "disc": "the whole CD, so that DATA and ASSETS are under original/"
+}
