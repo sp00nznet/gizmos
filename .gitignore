@@ -30,18 +30,21 @@ venv/
 work/
 *.json.bak
 
-# Generated recompiled code
-src/recomp/gen/
-src/recomp/imports_stub.c
+# Per-title scratch: the lifted C, the build, the logs and the screenshots.
+# All of it regenerates from the binary, and the biggest of them is a quarter
+# of a million lines.
+titles/*/gen/
+titles/*/work/
 
 # Extracted assets (regenerate from your own copy)
 extracted/
 
 # --- Original retail game files: NOT redistributed in this repo ---
-# Gizmos & Gadgets! (c) 1993-1996 The Learning Company. Long out of print, but
+# Every game here is (c) The Learning Company, 1992-1996. Long out of print, but
 # copyright most likely still subsists (the TLC -> SoftKey -> Mattel ->
 # Riverdeep -> HMH chain). Keep ALL original binaries and assets local-only.
 # Bring your own CD and drop its contents into original/ yourself.
+titles/*/original/
 original/
 *.EXE
 *.DLL

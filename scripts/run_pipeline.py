@@ -1,8 +1,15 @@
 #!/usr/bin/env python3
 """
-Gizmos & Gadgets static recompilation pipeline
+The Learning Company Win32 recompilation pipeline, one title at a time.
 
-Orchestrates: PE analysis -> disassembly -> function discovery -> lifting -> C output
+    python scripts/run_pipeline.py gizmos
+    python scripts/run_pipeline.py mathstorm
+
+Orchestrates: PE analysis -> disassembly -> function discovery -> lifting -> C
+output. Which binary, and where its lifted code lands, come from
+titles/<title>/title.json; everything else is the same for every game here,
+because they are the same engine.
+
 Uses pcrecomp tools from ../tools/ (the sibling checkout of the toolkit).
 """
 
@@ -13,7 +20,8 @@ import time
 import argparse
 
 # Add pcrecomp to path
-PCRECOMP_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'tools'))
+REPO_ROOT     = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+PCRECOMP_ROOT = os.path.abspath(os.path.join(REPO_ROOT, '..', 'tools'))
 sys.path.insert(0, PCRECOMP_ROOT)
 
 from tools.pe.pe_analyze import analyze_pe, build_iat_map, export_json
@@ -182,9 +190,9 @@ def generate_recomp_files(functions, iat_map, output_dir, split_size=1000, func_
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Gizmos & Gadgets static recompilation pipeline')
-    parser.add_argument('pe_file', help='Path to game executable')
-    parser.add_argument('--output', '-o', default='src/recomp/gen',
+    parser = argparse.ArgumentParser(description='The Learning Company Win32 recompilation pipeline')
+    parser.add_argument('title', help='which game: a directory name under titles/')
+    parser.add_argument('--output', '-o', default=None,
                         help='Output directory for generated code')
     parser.add_argument('--split', type=int, default=1000,
                         help='Max functions per source file')
@@ -205,6 +213,28 @@ def main():
                              'lifted functions get these names instead of sub_XXXXXXXX')
 
     args = parser.parse_args()
+
+    # Everything about a title lives beside its binary, so adding a game is a
+    # directory and a manifest rather than an edit to this file.
+    tdir = os.path.join(REPO_ROOT, 'titles', args.title)
+    manifest = os.path.join(tdir, 'title.json')
+    if not os.path.isfile(manifest):
+        known = sorted(d for d in os.listdir(os.path.join(REPO_ROOT, 'titles'))
+                       if os.path.isfile(os.path.join(REPO_ROOT, 'titles', d, 'title.json')))
+        parser.error("no such title: %s (known: %s)" % (args.title, ', '.join(known)))
+    with open(manifest) as f:
+        cfg = json.load(f)
+
+    args.pe_file = os.path.join(tdir, cfg['exe'].replace('/', os.sep))
+    if not os.path.isfile(args.pe_file):
+        parser.error("%s has no %s -- put your own copy of %s there"
+                     % (args.title, cfg['exe'], cfg.get('disc', 'the disc')))
+    if args.output is None:
+        args.output = os.path.join(tdir, 'gen')
+    if args.stubs is None:
+        args.stubs = os.path.join(tdir, 'gen', 'imports_stub.c')
+    os.makedirs(os.path.join(tdir, 'work'), exist_ok=True)
+    print("[*] %s -- %s" % (args.title, cfg.get('name', args.title)))
 
     start_time = time.time()
 

@@ -138,11 +138,23 @@ static u32 alloc_bridge(const char *name, void (*handler)(void), int argc) {
 
 static int g_unbound;
 
+/*
+ * Bind one import, if this binary actually has it.
+ *
+ * The tables here are a SUPERSET. One engine layer serves more than one title
+ * out of the same house, and no two of them import the same set: Gizmos &
+ * Gadgets and Treasure MathStorm agree on 95 imports and differ on 112 --
+ * MathStorm drives its audio through Miles rather than waveOut and MCI, and
+ * links WinG straight into its import table instead of loading it by hand.
+ *
+ * So a name this binary does not import is the normal case, not a warning; they
+ * are counted and report_unbridged() prints the total. The line that matters is
+ * the other one: an import with no bridge, which would dispatch to nothing.
+ */
 static void bind(const char *name, void (*handler)(void), void *real, int argc) {
     u32 iat_va = find_iat_slot(name);
     u32 addr;
     if (!iat_va) {
-        fprintf(stderr, "  BRIDGE: '%s' is not imported by this build\n", name);
         g_unbound++;
         return;
     }
@@ -150,6 +162,60 @@ static void bind(const char *name, void (*handler)(void), void *real, int argc) 
     if (!addr) return;
     bridges[addr - BRIDGE_BASE].iat_va = iat_va;
     bridges[addr - BRIDGE_BASE].real   = real;
+    MEM32(iat_va) = addr;
+}
+
+/*
+ * The same thing for an import bound by ORDINAL.
+ *
+ * A DLL can be linked without names at all -- the INT holds the ordinal with
+ * the high bit set and there is no string to match. MathStorm links Smacker
+ * that way, nine entry points and not one name among them, so find_iat_slot()
+ * cannot see them and bind() silently skips the lot.
+ *
+ * The ordinal alone is not enough either: ordinals are per-DLL and two modules
+ * can both export a #14. So this matches the module name as well.
+ */
+static int same_dll(const char *a, const char *b) {
+    while (*a && *b) {
+        char ca = *a++, cb = *b++;
+        if (ca >= 'A' && ca <= 'Z') ca = (char)(ca + 32);
+        if (cb >= 'A' && cb <= 'Z') cb = (char)(cb + 32);
+        if (ca != cb) return 0;
+    }
+    return *a == *b;
+}
+
+static u32 find_iat_slot_ordinal(const char *dll_want, u32 ord) {
+    u32 nt = GG_IMAGE_BASE + MEM32(GG_IMAGE_BASE + 0x3C);
+    u32 imports = MEM32(nt + 0x80);
+    u32 desc;
+
+    if (!imports) return 0;
+    for (desc = GG_IMAGE_BASE + imports; MEM32(desc + 12); desc += 20) {
+        const char *dll = (const char *)(uintptr_t)ADDR(GG_IMAGE_BASE + MEM32(desc + 12));
+        u32 int_rva = MEM32(desc + 0), iat_rva = MEM32(desc + 16), i;
+        if (!same_dll(dll, dll_want)) continue;
+        if (!int_rva) int_rva = iat_rva;
+        for (i = 0; ; i++) {
+            u32 thunk = MEM32(GG_IMAGE_BASE + int_rva + i * 4);
+            if (!thunk) break;
+            if ((thunk & 0x80000000u) && (thunk & 0xFFFFu) == ord)
+                return GG_IMAGE_BASE + iat_rva + i * 4;
+        }
+    }
+    return 0;
+}
+
+static void bind_ordinal(const char *dll, u32 ord, const char *name,
+                         void (*handler)(void), int argc) {
+    u32 iat_va = find_iat_slot_ordinal(dll, ord);
+    u32 addr;
+    if (!iat_va) { g_unbound++; return; }
+    addr = alloc_bridge(name, handler, argc);
+    if (!addr) return;
+    bridges[addr - BRIDGE_BASE].iat_va = iat_va;
+    bridges[addr - BRIDGE_BASE].real   = NULL;
     MEM32(iat_va) = addr;
 }
 
@@ -171,11 +237,20 @@ static void report_unbridged(void) {
             if (MEM32(slot) >= BRIDGE_BASE && MEM32(slot) < BRIDGE_BASE + (u32)num_bridges)
                 continue;
             missing++;
-            fprintf(stderr, "  BRIDGE: UNBRIDGED %s!%s\n", dll,
-                    (const char *)(uintptr_t)ADDR(GG_IMAGE_BASE + thunk + 2));
+            /* An import can be by ORDINAL, and then the thunk is not an RVA at
+             * all -- it is the ordinal with the high bit set. Dereferencing it
+             * as a name reads somewhere around 0x80400000 and faults, which is
+             * how this surfaced: the first binary here with ordinal imports
+             * (MathStorm links Smacker that way) crashed inside this very
+             * report, before a single lifted instruction had run. */
+            if (thunk & 0x80000000u)
+                fprintf(stderr, "  BRIDGE: UNBRIDGED %s!#%u\n", dll, thunk & 0xFFFFu);
+            else
+                fprintf(stderr, "  BRIDGE: UNBRIDGED %s!%s\n", dll,
+                        (const char *)(uintptr_t)ADDR(GG_IMAGE_BASE + thunk + 2));
         }
     }
-    fprintf(stderr, "  %d bridges bound, %u imports unbridged, %d names not imported\n",
+    fprintf(stderr, "  %d bridges bound, %u imports UNBRIDGED, %d in the table this title does not import\n",
             num_bridges, missing, g_unbound);
 }
 
@@ -335,6 +410,37 @@ static const struct { const char *dll, *name; int argc; } g_passthrough[] = {
     {"winmm",  "waveOutPause",             1},
     {"winmm",  "waveOutReset",             1},
     {"winmm",  "waveOutRestart",           1},
+    {"winmm",  "timeKillEvent",            1},
+
+    /* --- Treasure MathStorm's additions ---
+     *
+     * The same engine three years on: a fuller CRT (the locale and codepage
+     * calls), accelerators and a help file, and the pointer-validity checks.
+     * IsBad*Ptr passes straight through -- the image is mapped at its own VA
+     * and the low heap is below 4 GB, so a pointer the game holds already IS a
+     * host pointer, and the answer the host gives is the true one. */
+    {"kernel32", "AllocConsole",           0},
+    {"kernel32", "CreateDirectoryA",       2},
+    {"kernel32", "FlushFileBuffers",       1},
+    {"kernel32", "GetACP",                 0},
+    {"kernel32", "GetCPInfo",              2},
+    {"kernel32", "GetOEMCP",               0},
+    {"kernel32", "GetSystemDirectoryA",    2},
+    {"kernel32", "IsBadCodePtr",           1},
+    {"kernel32", "IsBadReadPtr",           2},
+    {"kernel32", "IsBadWritePtr",          2},
+    {"kernel32", "MultiByteToWideChar",    6},
+    {"kernel32", "SetEndOfFile",           1},
+    {"kernel32", "SetStdHandle",           2},
+    {"kernel32", "WideCharToMultiByte",    8},
+    {"user32",   "CheckRadioButton",       4},
+    {"user32",   "GetCapture",             0},
+    {"user32",   "GetClientRect",          2},
+    {"user32",   "LoadAcceleratorsA",      2},
+    {"user32",   "ModifyMenuA",            5},
+    {"user32",   "ReleaseCapture",         0},
+    {"user32",   "SetWindowTextA",         2},
+    {"user32",   "WinHelpA",               4},
 };
 
 /* ===================================================================
@@ -435,16 +541,28 @@ static void report_file(const char *api, const char *path, int ok) {
  * Neptune had the same check behind a CheckSound switch in its .INI. This build
  * hardcodes it, so it is answered here instead.
  */
-static int is_midimap_cfg(const char *path) {
+static int is_answered_probe(const char *path) {
+    static const char *const names[] = {
+        /* The Windows 3.1 MIDI mapper config, above. */
+        "midimap.cfg",
+        /* "Is WinG installed?", looked for in the system directory. We ARE
+         * WinG -- the shim below answers all eight of its entry points -- so
+         * the only true answer is yes. MathStorm asks this one and exits if it
+         * does not like the answer; Gizmos & Gadgets never asks. */
+        "wing32.dll",
+    };
     const char *slash = strrchr(path, '\\');
+    size_t i;
     if (!slash) slash = strrchr(path, '/');
-    return _stricmp(slash ? slash + 1 : path, "midimap.cfg") == 0;
+    for (i = 0; i < sizeof(names) / sizeof(names[0]); i++)
+        if (_stricmp(slash ? slash + 1 : path, names[i]) == 0) return 1;
+    return 0;
 }
 
 static void bridge_lopen(void) {
     const char *path = (const char *)(uintptr_t)ADDR(ARG(1));
     HFILE f = _lopen(path, (int)ARG(2));
-    if (f == HFILE_ERROR && is_midimap_cfg(path)) {
+    if (f == HFILE_ERROR && is_answered_probe(path)) {
         f = _lopen("NUL", OF_READ);
         if (file_trace())
             fprintf(stderr, "  FILE: _lopen               %s   <-- answered with NUL "
@@ -478,12 +596,22 @@ static void bridge_CreateFileA(void) {
     HANDLE h = CreateFileA(path, ARG(2), ARG(3),
                            sec_attrs(ARG(4), &sa),
                            ARG(5), ARG(6), (HANDLE)(uintptr_t)ARG(7));
-    if (h == INVALID_HANDLE_VALUE && file_trace())
+    /* MathStorm asks for WinG the same way Gizmos & Gadgets asks for the MIDI
+     * mapper, only through CreateFileA rather than _lopen -- and exits if it
+     * does not find it. Same answer, same reason. */
+    if (h == INVALID_HANDLE_VALUE && is_answered_probe(path)) {
+        h = CreateFileA("NUL", GENERIC_READ, FILE_SHARE_READ, NULL,
+                        OPEN_EXISTING, 0, NULL);
+        if (file_trace())
+            fprintf(stderr, "  FILE: CreateFileA          %s   <-- answered with NUL "
+                            "(a 1996 environment probe this runtime already satisfies)\n", path);
+    } else if (h == INVALID_HANDLE_VALUE && file_trace()) {
         fprintf(stderr, "  FILE: CreateFileA          %s   <-- FAILED %lu "
                         "(access=0x%X share=0x%X disp=%u attr=0x%X)\n",
                 path, GetLastError(), ARG(2), ARG(3), ARG(5), ARG(6));
-    else
+    } else {
         report_file("CreateFileA", path, 1);
+    }
     eax = (u32)(uintptr_t)h;
     esp += 4 + 28;
 }
@@ -1575,6 +1703,205 @@ static void bridge_EnumThreadWindows(void) { fprintf(stderr, "    EnumThreadWind
 
 
 /* ===================================================================
+ * Miles Sound System (mss32.dll)
+ *
+ * Treasure MathStorm does not use waveOut or MCI at all: its audio goes
+ * through Miles, twenty-four `_AIL_*` entry points, decorated stdcall. A real
+ * MSS32.DLL ships on its own disc and is a 32-bit PE, so it could in principle
+ * be loaded for real -- but it talks to a 1996 sound stack underneath, and the
+ * game only ever asks it four questions: did you start, here is a sample, is it
+ * finished, stop.
+ *
+ * ponytail: so this is a bookkeeping shim. Handles are small integers, a sample
+ * is "playing" until asked and then done, and the game's sequencing runs at the
+ * right pace because AIL_sample_status answers honestly about a clock rather
+ * than about a speaker. Nothing comes out. When it should, this is where a real
+ * mixer goes -- the surface is already the right shape, and every entry point
+ * that returns a pointer already comes from the low heap.
+ * =================================================================== */
+
+#define AIL_MAX_SAMPLES 32
+#define AIL_FIRST_HANDLE 0x4110u     /* not 0, and not a plausible pointer */
+
+typedef struct {
+    int   used;
+    int   playing;
+    u32   user_data[8];
+    DWORD started_ms;
+    DWORD length_ms;
+} ail_sample_t;
+
+static ail_sample_t g_ail[AIL_MAX_SAMPLES];
+static int g_ail_up;
+
+static ail_sample_t *ail_get(u32 h) {
+    u32 i = h - AIL_FIRST_HANDLE;
+    return (i < AIL_MAX_SAMPLES && g_ail[i].used) ? &g_ail[i] : NULL;
+}
+
+static void bridge_AIL_startup(void)  { g_ail_up = 1; eax = 1; esp += 4; }
+static void bridge_AIL_shutdown(void) { g_ail_up = 0; eax = 0; esp += 4; }
+
+/* AIL_allocate_sample_handle(driver) -> HSAMPLE */
+static void bridge_AIL_allocate_sample_handle(void) {
+    int i;
+    eax = 0;
+    for (i = 0; i < AIL_MAX_SAMPLES; i++) {
+        if (g_ail[i].used) continue;
+        memset(&g_ail[i], 0, sizeof(g_ail[i]));
+        g_ail[i].used = 1;
+        eax = AIL_FIRST_HANDLE + (u32)i;
+        break;
+    }
+    esp += 4 + 4;
+}
+
+static void bridge_AIL_release_sample_handle(void) {
+    ail_sample_t *smp = ail_get(ARG(1));
+    if (smp) memset(smp, 0, sizeof(*smp));
+    esp += 4 + 4;
+}
+
+/*
+ * How long the game thinks a sound lasts.
+ *
+ * It waits on AIL_sample_status, so answering "done" immediately would run
+ * every cutscene at whatever speed the loop happens to spin at. There is no
+ * length to read -- the buffer it was handed is raw PCM with a rate set
+ * separately -- so the length is taken from the bytes and the playback rate
+ * when both are known, and otherwise left at zero, which reads as done.
+ */
+static void ail_begin(ail_sample_t *smp) {
+    smp->playing    = 1;
+    smp->started_ms = GetTickCount();
+}
+
+/* AIL_start_sample / stop / resume */
+static void bridge_AIL_start_sample(void) {
+    ail_sample_t *smp = ail_get(ARG(1));
+    if (smp) ail_begin(smp);
+    esp += 4 + 4;
+}
+static void bridge_AIL_stop_sample(void) {
+    ail_sample_t *smp = ail_get(ARG(1));
+    if (smp) smp->playing = 0;
+    esp += 4 + 4;
+}
+static void bridge_AIL_resume_sample(void) {
+    ail_sample_t *smp = ail_get(ARG(1));
+    if (smp) ail_begin(smp);
+    esp += 4 + 4;
+}
+
+/* AIL_sample_status(HSAMPLE) -> 2 DONE, 4 PLAYING (SMP_DONE / SMP_PLAYING) */
+static void bridge_AIL_sample_status(void) {
+    ail_sample_t *smp = ail_get(ARG(1));
+    eax = 2;
+    if (smp && smp->playing) {
+        if (smp->length_ms && GetTickCount() - smp->started_ms < smp->length_ms) eax = 4;
+        else smp->playing = 0;
+    }
+    esp += 4 + 4;
+}
+
+/* AIL_set_sample_address(HSAMPLE, void *start, u32 len) -- the PCM itself. */
+static void bridge_AIL_set_sample_address(void) {
+    ail_sample_t *smp = ail_get(ARG(1));
+    if (smp) smp->length_ms = ARG(3) ? ARG(3) / 22u : 0;   /* ~22 kHz, 8-bit mono */
+    esp += 4 + 12;
+}
+
+/* AIL_set_sample_playback_rate(HSAMPLE, int hz) -- now the length is knowable. */
+static void bridge_AIL_set_sample_playback_rate(void) {
+    esp += 4 + 8;
+}
+
+/* The sample's own scratch word: the game stores an index in it and reads it
+ * back, so it has to survive rather than be dropped. */
+static void bridge_AIL_set_sample_user_data(void) {
+    ail_sample_t *smp = ail_get(ARG(1));
+    if (smp && ARG(2) < 8) smp->user_data[ARG(2)] = ARG(3);
+    esp += 4 + 12;
+}
+static void bridge_AIL_sample_user_data(void) {
+    ail_sample_t *smp = ail_get(ARG(1));
+    eax = (smp && ARG(2) < 8) ? smp->user_data[ARG(2)] : 0;
+    esp += 4 + 8;
+}
+
+/* Miles' own allocator. Like GlobalAlloc, what it returns has to fit in 32
+ * bits, so it comes from the low heap. */
+static void bridge_AIL_mem_alloc_lock(void) { eax = gg_heap_alloc(ARG(1)); esp += 4 + 4; }
+static void bridge_AIL_mem_free_lock(void)  { gg_heap_free(ARG(1)); eax = 1; esp += 4 + 4; }
+
+/* AIL_allocate_file_sample(void *file, u32 len, int block) -> void*: hands back
+ * a pointer INTO the file image, past the header. Nothing here parses the
+ * format, so it answers with the buffer it was given. */
+static void bridge_AIL_allocate_file_sample(void) { eax = ARG(1); esp += 4 + 12; }
+
+static void bridge_AIL_init_sample(void)         { eax = 1; esp += 4 + 4; }
+static void bridge_AIL_load_sample_buffer(void)  { esp += 4 + 16; }
+static void bridge_AIL_sample_buffer_ready(void) { eax = 0; esp += 4 + 4; }
+static void bridge_AIL_set_sample_loop_count(void) { esp += 4 + 8; }
+static void bridge_AIL_set_sample_type(void)     { eax = 1; esp += 4 + 12; }
+static void bridge_AIL_set_preference(void)      { eax = 0; esp += 4 + 8; }
+static void bridge_AIL_waveOutOpen(void)         { eax = 0; esp += 4 + 16; }
+static void bridge_AIL_waveOutClose(void)        { eax = 0; esp += 4 + 4; }
+
+/* TranslateAcceleratorA takes an MSG, 28 bytes in the game and 48 here -- the
+ * same translation DispatchMessageA needs, so it cannot be a pass-through. */
+static void bridge_TranslateAcceleratorA(void) {
+    MSG m;
+    msg_from_game(ARG(3), &m);
+    eax = (u32)TranslateAcceleratorA((HWND)(uintptr_t)ARG(1),
+                                     (HACCEL)(uintptr_t)ARG(2), &m);
+    esp += 4 + 12;
+}
+
+/* SetUnhandledExceptionFilter: the CRT installs one and we never raise, so the
+ * honest answer is "there was none before". */
+static void bridge_SetUnhandledExceptionFilter(void) { eax = 0; esp += 4 + 4; }
+
+/* ===================================================================
+ * Smacker (smackw32.dll)
+ *
+ * MathStorm plays four .SMK cutscenes -- the opening, the parachute, the
+ * closing -- through RAD's Smacker runtime, linked by ordinal.
+ *
+ * ponytail: declined, not decoded. SmackOpen answers 0, which is the same thing
+ * the game sees on a machine whose disc is not in the drive, and it has a path
+ * for that already: the 16-bit build on the same disc ships without the 32-bit
+ * runtime and has to cope. Decoding Smacker is a real piece of work and buys a
+ * cutscene; if it ever matters, everything below becomes a thin wrapper over a
+ * decoder and the rest of the engine does not change.
+ * =================================================================== */
+
+static void bridge_SmackOpen(void)         { eax = 0; esp += 4 + 12; }
+static void bridge_SmackClose(void)        { esp += 4 + 4; }
+static void bridge_SmackDoFrame(void)      { eax = 0; esp += 4 + 4; }
+static void bridge_SmackNextFrame(void)    { eax = 0; esp += 4 + 4; }
+static void bridge_SmackToBuffer(void)     { eax = 0; esp += 4 + 28; }
+static void bridge_SmackToBufferRect(void) { eax = 0; esp += 4 + 8; }
+static void bridge_SmackSoundCheck(void)   { eax = 0; esp += 4; }
+static void bridge_SmackWait(void)         { eax = 0; esp += 4 + 4; }
+static void bridge_SmackSoundUseMSS(void)  { eax = 1; esp += 4 + 4; }
+
+/* Ordinal, name (for the log and the trace), handler, argument dwords. The
+ * ordinals are SMACKW32.DLL's own, read off the copy on this game's disc. */
+static const struct { u32 ord; const char *name; void (*fn)(void); int argc; }
+g_smacker[] = {
+    {14, "SmackOpen",        bridge_SmackOpen,         3},
+    {18, "SmackClose",       bridge_SmackClose,        1},
+    {19, "SmackDoFrame",     bridge_SmackDoFrame,      1},
+    {21, "SmackNextFrame",   bridge_SmackNextFrame,    1},
+    {23, "SmackToBuffer",    bridge_SmackToBuffer,     7},
+    {28, "SmackToBufferRect",bridge_SmackToBufferRect, 2},
+    {31, "SmackSoundCheck",  bridge_SmackSoundCheck,   0},
+    {32, "SmackWait",        bridge_SmackWait,         1},
+    {33, "SmackSoundUseMSS", bridge_SmackSoundUseMSS,  1},
+};
+
+/* ===================================================================
  * Wiring
  * =================================================================== */
 
@@ -1655,6 +1982,58 @@ void setup_iat_bridges(void) {
     bind("waveOutUnprepareHeader",   bridge_waveOutUnprepareHeader,   NULL, 3);
     bind("waveOutWrite",             bridge_waveOutWrite,             NULL, 3);
     bind("mciSendCommandA",          bridge_mciSendCommandA,          NULL, 4);
+
+    bind("TranslateAcceleratorA",    bridge_TranslateAcceleratorA,    NULL, 3);
+    bind("SetUnhandledExceptionFilter", bridge_SetUnhandledExceptionFilter, NULL, 1);
+
+    /*
+     * WinG, bound by NAME straight out of the import table.
+     *
+     * Gizmos & Gadgets loads WING32.DLL by hand and asks for each entry point
+     * by ordinal, so its eight bridges are handed out by GetProcAddress above.
+     * MathStorm links the same DLL statically, so the names are in its IAT and
+     * the ordinary path binds them. Same eight functions either way; only how
+     * the game reaches them differs.
+     */
+    {
+        size_t k;
+        for (k = 0; k < sizeof(g_wing_exports) / sizeof(g_wing_exports[0]); k++)
+            bind(g_wing_exports[k].name, g_wing_exports[k].fn, NULL,
+                 g_wing_exports[k].argc);
+    }
+
+    /* Miles Sound System. Decorated stdcall, so the names carry their @bytes --
+     * same_import() already strips a leading underscore and stops at the '@'. */
+    bind("_AIL_startup",                  bridge_AIL_startup,                  NULL, 0);
+    bind("_AIL_shutdown",                 bridge_AIL_shutdown,                 NULL, 0);
+    bind("_AIL_allocate_sample_handle",   bridge_AIL_allocate_sample_handle,   NULL, 1);
+    bind("_AIL_release_sample_handle",    bridge_AIL_release_sample_handle,    NULL, 1);
+    bind("_AIL_init_sample",              bridge_AIL_init_sample,              NULL, 1);
+    bind("_AIL_start_sample",             bridge_AIL_start_sample,             NULL, 1);
+    bind("_AIL_stop_sample",              bridge_AIL_stop_sample,              NULL, 1);
+    bind("_AIL_resume_sample",            bridge_AIL_resume_sample,            NULL, 1);
+    bind("_AIL_sample_status",            bridge_AIL_sample_status,            NULL, 1);
+    bind("_AIL_set_sample_address",      bridge_AIL_set_sample_address,       NULL, 3);
+    bind("_AIL_set_sample_playback_rate", bridge_AIL_set_sample_playback_rate, NULL, 2);
+    bind("_AIL_set_sample_loop_count",    bridge_AIL_set_sample_loop_count,    NULL, 2);
+    bind("_AIL_set_sample_type",         bridge_AIL_set_sample_type,          NULL, 3);
+    bind("_AIL_set_sample_user_data",    bridge_AIL_set_sample_user_data,     NULL, 3);
+    bind("_AIL_sample_user_data",         bridge_AIL_sample_user_data,         NULL, 2);
+    bind("_AIL_set_preference",           bridge_AIL_set_preference,           NULL, 2);
+    bind("_AIL_mem_alloc_lock",           bridge_AIL_mem_alloc_lock,           NULL, 1);
+    bind("_AIL_mem_free_lock",            bridge_AIL_mem_free_lock,            NULL, 1);
+    bind("_AIL_allocate_file_sample",    bridge_AIL_allocate_file_sample,     NULL, 3);
+    bind("_AIL_load_sample_buffer",      bridge_AIL_load_sample_buffer,       NULL, 4);
+    bind("_AIL_sample_buffer_ready",      bridge_AIL_sample_buffer_ready,      NULL, 1);
+    bind("_AIL_waveOutOpen",             bridge_AIL_waveOutOpen,              NULL, 4);
+    bind("_AIL_waveOutClose",             bridge_AIL_waveOutClose,             NULL, 1);
+
+    {
+        size_t k;
+        for (k = 0; k < sizeof(g_smacker) / sizeof(g_smacker[0]); k++)
+            bind_ordinal("smackw32.dll", g_smacker[k].ord, g_smacker[k].name,
+                         g_smacker[k].fn, g_smacker[k].argc);
+    }
 
     report_unbridged();
 }

@@ -1,26 +1,45 @@
-# Run the recompiled game and photograph its window, once or repeatedly.
+# Run one title's recompilation and photograph its window, once or repeatedly.
 #
-#   scripts\shot.ps1                          one shot after 6s -> work\shot.png
-#   scripts\shot.ps1 -At 5,20,60 -Out work\s  three shots in ONE run -> work\s5.png ...
-#   scripts\shot.ps1 -At 30 -Clicks 10,20     left-click the centre at 10s and 20s
-#   scripts\shot.ps1 -Clicks "12@262,297"     click a point (client coords)
-#   scripts\shot.ps1 -Type "20@ALEX"          type text, then Enter
-#   scripts\shot.ps1 -Keys "30@39x40"         hold VK 39 (right arrow) for 40 repeats
-#   scripts\shot.ps1 -Loud                    leave the sound on (muted by default)
+#   scripts\shot.ps1 gizmos                        one shot after 6s
+#   scripts\shot.ps1 gizmos -At 20,140,165         three shots in ONE run
+#   scripts\shot.ps1 gizmos -Clicks "150@415,372"  click a point (client coords)
+#   scripts\shot.ps1 gizmos -Type "20@ALEX"        type text, then Enter
+#   scripts\shot.ps1 gizmos -Keys "30@39x40"       hold VK 39 for 40 repeats
+#   scripts\shot.ps1 mathstorm -Loud               leave the sound on
 #
-# Shots are of the client area, so a pixel in one is a coordinate you can click.
+# Shots default to titles\<title>\work\shot.png, and are of the CLIENT area, so
+# a pixel in one is a coordinate you can click.
 param(
+    [Parameter(Mandatory = $true, Position = 0)] [string]$Title,
     [int]$Seconds = 6,
     [int[]]$At,
     [string[]]$Clicks,
     [string[]]$Type,
     [string[]]$Keys,
-    [string]$Out = "work\shot.png",
+    [string]$Out,
     [switch]$Loud
 )
 $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
 Set-Location $root
+
+# Everything is per-title; the harness is not. One engine, one script,
+# whichever of these games is in front of it.
+$dir = "titles\$Title"
+if (-not (Test-Path "$dir\title.json")) {
+    Write-Output "no such title: $Title"
+    Write-Output ("known: " + ((Get-ChildItem titles -Directory).Name -join ", "))
+    exit 1
+}
+$cfg    = Get-Content "$dir\title.json" -Raw | ConvertFrom-Json
+$Exe    = "$dir\work\$Title.exe"
+$Target = Join-Path $dir ($cfg.exe -replace "/", "\\")
+$log    = "$dir\work\shot.log"
+if (-not $Out) { $Out = "$dir\work\shot.png" }
+
+# The game relaunches itself, so every window and process lookup below is by
+# image name rather than by the handle we hold.
+$proc = $Title
 
 Add-Type -AssemblyName System.Drawing
 Add-Type @"
@@ -56,9 +75,9 @@ Remove-Item Env:GG_WATCHDOG_MS -ErrorAction SilentlyContinue
 
 # FindWindow by class name does not work here: window classes are per-process,
 # and the game runs in the relaunched child (see premap.c). Enumerate instead
-# and keep the first top-level window belonging to any gizmos.exe.
+# and keep the first top-level window belonging to this title's.
 function Get-GameWindow {
-    $ids = @(Get-Process gizmos -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
+    $ids = @(Get-Process $proc -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
     $script:found = [IntPtr]::Zero
     $cb = [Shot+EnumProc]{
         param($h, $lp)
@@ -70,8 +89,7 @@ function Get-GameWindow {
         # a real client area instead.
         if ($ids -contains $wpid -and $script:found -eq [IntPtr]::Zero) {
             $r = New-Object Shot+RECT
-            if ([Shot]::IsWindowVisible($h) -and [Shot]::GetClientRect($h, [ref]$r) `
-                -and $r.Right -gt 0 -and $r.Bottom -gt 0) {
+            if ([Shot]::IsWindowVisible($h) -and [Shot]::GetClientRect($h, [ref]$r) -and $r.Right -gt 0 -and $r.Bottom -gt 0) {
                 $script:found = $h
             }
         }
@@ -117,11 +135,9 @@ function Save-Shot([IntPtr]$hwnd, [string]$path) {
 }
 
 
-Get-Process gizmos -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Get-Process $proc -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 
-$p = Start-Process -FilePath "work\gizmos.exe" `
-                   -ArgumentList "original\SSGWINCD\SSGWIN32.EXE" `
-                   -PassThru -RedirectStandardError "work\shot.log" -RedirectStandardOutput "work\shot.out"
+$p = Start-Process -FilePath $Exe -ArgumentList $Target -PassThru -RedirectStandardError $log -RedirectStandardOutput "$dir\work\shot.out"
 
 
 
@@ -199,4 +215,4 @@ foreach ($step in $plan) {
 # which then owns the window, so the NEXT run's FindWindowA single-instance
 # check finds it and the game exits before it draws anything. That reads as
 # "the build broke", and it is not.
-Get-Process gizmos -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Get-Process $proc -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue

@@ -1,88 +1,103 @@
-# Gizmos & Gadgets! Static Recompilation
+# Super Solvers, recompiled
 
-Static recompilation of **Super Solvers: Gizmos & Gadgets!** (The Learning
-Company, 1993; Windows CD re-release 1996) from its shipping Win32 binary to
-native C. `SSGWIN32.EXE` is a 346 KB Borland-compiled PE that holds the whole
-game — the lab, the vehicle workshop, the races, the puzzles — and this project
-lifts every function in it to C and answers the Win32 API it expects with a
-small runtime.
+Static recompilation of The Learning Company's Win32 **Super Solvers** games
+from their shipping binaries to native C. No emulator: the 1996 machine code,
+translated once and compiled for a machine that did not exist when it shipped.
 
-No emulator. The 1996 machine code, translated once and compiled for a machine
-that did not exist when it shipped.
+These games are the same program wearing different art — Borland C++ PE32 built
+for Win32s, drawing through WinG, settings in an `.INI` beside the executable,
+assets read off the CD by hand — so they share one engine layer here, and a fix
+found in one is a fix in all of them.
 
-Built on the [pcrecomp](https://github.com/sp00nznet/pcrecomp) toolchain, and
-directly on the work done for
-[operationneptune](https://github.com/sp00nznet/operationneptune) — same
-publisher, same era, same engine. Most of this project's engine layer is
-Neptune's, renamed and extended.
+Built on the [pcrecomp](https://github.com/sp00nznet/pcrecomp) toolchain,
+alongside [operationneptune](https://github.com/sp00nznet/operationneptune),
+which is the same engine again and where most of this runtime started.
 
-## Status
+## The titles
 
-**It runs.** The recompiled binary plays the whole attract sequence: Morty
-Maxwell's lab, animated, with its music and narration; the title card; and the
-Shady Glen Technology Center sign-in screen, whose buttons respond.
+| | Binary | Status |
+|---|---|---|
+| **Gizmos & Gadgets!** (1993 / CD 1996) | `SSGWIN32.EXE`, 284 KB code | **Plays its whole attract sequence** — the intro, animated, with music and speech; the title card; sign-in, with working buttons |
+| **Treasure MathStorm!** (1992 / CD 1996) | `TMS32.EXE`, 290 KB code | **Boots and runs** — loads its archives, creates both WinG surfaces, finds its music. Nothing on screen yet |
 
 ![Morty Maxwell's lab, the opening scene](docs/img/intro.png)
 
-*The opening scene, drawn by Gizmos & Gadgets' own code running natively. The
-robots and Morty's arm animate; the blackboard, the lab and every sprite come
-out of the game's `.DAT` archives through its own RLE decoder.*
+*Gizmos & Gadgets' opening scene, drawn by the game's own code running natively.
+The robots and Morty's arm animate; the blackboard, the lab and every sprite
+come out of the game's `.DAT` archives through its own RLE decoder.*
 
 | | |
 |---|---|
 | ![Morty's airship over the Technology Center](docs/img/airship.png) | ![The title card](docs/img/title.png) |
 | Later in the same cutscene: the airship over the Technology Center roof | The title card, after the intro plays out |
 | ![Sign in](docs/img/signin.png) | ![Morty, mid-animation](docs/img/intro2.png) |
-| Shady Glen Technology Center: Start Game, New Player, Cancel | The same lab a few seconds on -- the robots and Morty's arm have moved |
+| Shady Glen Technology Center: Start Game, New Player, Cancel | The same lab a few seconds on — the robots and Morty's arm have moved |
 
-### Where it works and where it doesn't
+### Gizmos & Gadgets
 
-Working:
+Working: the intro end to end with its MIDI score and its speech; graphics at
+512×384 in 256 colours, both WinG pages, the RLE sprite codec, the palette, and
+real GDI text in the same pixels; mouse and keyboard into the game's own window
+procedure; all 154 imports bridged.
 
-- **The intro runs** end to end -- Morty's lab, animated, then the title card,
-  then sign-in -- with its MIDI score and its speech.
-- **Graphics are correct.** 512x384 in 256 colours, both WinG pages, the RLE
-  sprite codec, the palette, and real GDI text in the same pixels.
-- **Sound.** `MIDI\*.MID` through MCI; speech and effects out through `waveOut`
-  at 22 kHz. WaveMix and DirectSound are declined and the game takes its own
-  documented fallback for each.
-- **Input.** Mouse and keyboard reach the game's own window procedure, so the
-  menus respond.
-- **All 154 imports are bridged**, including `DialogBoxParamA`, which the game
-  will not start without.
+Not working yet: **no game has been played.** The attract loop runs, but nobody
+has signed in and gone into the lab, so the puzzles, the vehicle workshop and the
+races are all unvisited. Almost nothing is named either — all 1,998 functions are
+`sub_004xxxxx`, and unlike Neptune this disc ships no linker map.
 
-Not working yet:
+### Treasure MathStorm
 
-- **No game has been played.** The attract loop runs; nobody has signed in and
-  gone into the lab, so the puzzles, the vehicle workshop and the races are all
-  still unvisited.
-- **Almost nothing is named.** All 1,998 functions are `sub_004xxxxx`. Unlike
-  Neptune, this disc ships no linker map.
-- **Thirteen instructions did not lift**, all of them in blocks that look like
-  data decoded as code (`int1`, `salc`, `bnd`, `insb`, `daa`). Two --
-  `cmpsd` and `xlatb` -- might be real and have not been reached.
+Working: startup, `TMSDATA.DAT` and `TMSSOUND.DAT`, both 640×480 WinG surfaces,
+its music files, and **all 158 imports bridged** on the first run that got that
+far.
 
-The lift itself:
+Not working yet: nothing has reached the screen. Its audio is Miles rather than
+waveOut and MCI, and its cutscenes are Smacker video; both are shimmed rather
+than implemented — `AIL_*` is bookkeeping with no mixer behind it, and
+`SmackOpen` declines, which is what the game sees when the disc is not in the
+drive. That is where the next work is.
 
-| | |
-|---|---:|
-| Functions recovered | 1,998 (156 thunks) |
-| Instructions decoded | 121,459 |
-| Code bytes covered | 288,122 of 290,816 -- **99.07%** |
-| Lines of generated C | 241,909 |
-| Lift errors / unsupported opcodes | 0 / 13 |
-| Imports bridged | **154 of 154** |
+### The lift
+
+| | Gizmos & Gadgets | Treasure MathStorm |
+|---|---:|---:|
+| Functions recovered | 1,998 | 4,769 |
+| Instructions decoded | 121,459 | 314,026 |
+| Code bytes covered | **99.07%** | **99.98%** |
+| Lines of generated C | 241,909 | 628,392 |
+| Lift errors | 0 | 0 |
+| Imports bridged | **154 of 154** | **158 of 158** |
+
+MathStorm's function count is inflated and its line count with it: recursive
+descent over-merges badly on that binary, and several of its "functions" span
+most of the code section, so the same instructions get lifted into more than one
+of them. It compiles and runs; it is about three times the C it should be.
+
+### Not this engine
+
+Three more Super Solvers titles sit on the same Win3x disc set and are **16-bit
+NE**, not Win32 — a different pipeline entirely (pcrecomp's `ne/` and `lift16`,
+as used for Catz, Microsoft Bob and El-Fish):
+
+Midnight Rescue! (22 segments), OutNumbered! (26) and Spellbound! (21). Each
+imports only GDI, KERNEL, MMSYSTEM, TOOLHELP and USER, and none has a 32-bit twin
+on its disc. Treasure Mountain! and Treasure Galaxy! ship no CD image at all.
 
 ## The engine underneath
 
-Operation Neptune and Gizmos & Gadgets are the same program wearing different
-art. Both are Borland C++ PE32 builds for Win32s, both draw through
-**WING32.DLL**, both keep their settings in an `.INI` next to the executable,
-and both read their assets out of flat archives on the CD by hand.
+Operation Neptune, Gizmos & Gadgets and Treasure MathStorm are the same program
+wearing different art. All three are Borland C++ PE32 builds for Win32s, all
+three draw through **WING32.DLL**, all three keep their settings in an `.INI`
+next to the executable, and all three read their assets out of flat archives on
+the CD by hand.
 
-That is the whole point of doing this one second. Neptune took a full
-engine-layer bring-up; this one reused it, and the work reduced to the
-differences:
+That is the whole point of doing them in order. Neptune took a full engine-layer
+bring-up; Gizmos & Gadgets reused it, and the work reduced to the differences
+below. MathStorm then reused *that* and was answering all 158 of its imports on
+the first run — its differences are Miles instead of waveOut and MCI, Smacker
+cutscenes, and WinG linked statically rather than loaded by hand.
+
+Gizmos & Gadgets against Neptune:
 
 | | Operation Neptune | Gizmos & Gadgets |
 |---|---|---|
@@ -177,12 +192,20 @@ is version-independent bytes sitting at a real address, so
 lifted code with no machine code behind it, so it goes through a trampoline,
 exactly like the window procedure.
 
-## Six bugs this game found in the toolchain
+## Seven bugs these games found in the toolchain
 
-This title is a Borland build whose drawing code is ported 16-bit assembly, so
-it leans on parts of the lifter that a 32-bit MSVC game never touches. All six
-are fixed upstream in [pcrecomp](https://github.com/sp00nznet/pcrecomp), with
+These are Borland builds whose drawing code is ported 16-bit assembly, so they
+lean on parts of the lifter that a 32-bit MSVC game never touches. All seven are
+fixed upstream in [pcrecomp](https://github.com/sp00nznet/pcrecomp), with
 regression cases in its differential harness, and every project there gets them.
+
+Five of the seven are the same defect wearing different clothes: **an
+instruction writes CF, and the lazy flag model is not told.** The model holds
+one instruction's operands and a kind, and derives each flag when something
+asks — which works for arithmetic and fails for everything whose result is a
+carry rather than a number. Each time it surfaced it looked like a different
+bug, and each time the fix was to freeze the flags into a word with the real
+carry in it.
 
 **`loop` was not a branch.** `disasm32.py` derived block leaders from its
 conditional-jump set, and `loop`/`loope`/`loopne` were not in it. The jump was
@@ -230,6 +253,16 @@ codec writes a run of one colour, which is most of a 1990s background image, so
 every fill wrote no pixels and left `edi` where it was, desynchronising the rest
 of the row. This was the last bug between a black screen and the picture above.
 
+**`clc` and `stc` wrote a carry nobody read.** They set the running carry
+variable and left the flag tuple pointing at the last arithmetic instruction, so
+the branch that reads the carry read *that* instead. Borland's `strcpy` and
+`strcat` are one routine with two entry points — `clc` at one, `stc` at the
+other, and a single `jb` deciding whether to scan for the end of the destination
+first. With the carry unpublished, `strcpy` ran as `strcat`: Treasure MathStorm
+built every data file's path onto the end of the previous one and could open
+none of them. (`cmc` was wrong twice over — it complemented the running variable
+rather than the carry that was actually set.)
+
 ### And two in this project's own test harness
 
 Both cost real debugging time, so they are worth writing down. The game
@@ -248,28 +281,37 @@ launched it. Reading the window's own DC works, occluded or not.
 
 ## Building it
 
-You need your own copy of the game. Put the CD's contents in `original/`, so
-that `original/SSGWINCD/SSGWIN32.EXE` exists.
+You need your own copy of each game. Put a disc's contents under
+`titles/<title>/original/`, so that the path in that title's `title.json`
+resolves — `titles/gizmos/original/SSGWINCD/SSGWIN32.EXE`,
+`titles/mathstorm/original/TMS32.EXE`.
 
 ```powershell
-# Lift the binary to C (about a minute)
-python tools\run_pipeline.py original\SSGWINCD\SSGWIN32.EXE --all `
-       --output src\recomp\gen --stubs src\recomp\imports_stub.c
+# Lift a binary to C (a minute or two)
+python scripts\run_pipeline.py gizmos --all
 
-# Build (MSVC; about two minutes for 242k lines)
-scripts\build.ps1
+# Build it. The engine compiles alongside that title's lifted code.
+scripts\build.ps1 gizmos
 
-# Run
-work\gizmos.exe original\SSGWINCD\SSGWIN32.EXE
+# Run it
+titles\gizmos\work\gizmos.exe titles\gizmos\original\SSGWINCD\SSGWIN32.EXE
 
 # Or drive it and photograph it, muted
-scripts\shot.ps1 -At 20,140,165 -Out work\s     # intro, title, sign-in
-scripts\shot.ps1 -Loud                          # ...with the sound on
-scripts\shot.ps1 -At 150 -Clicks "145@415,372"   # and click a button
+scripts\shot.ps1 gizmos -At 20,140,165
+scripts\shot.ps1 gizmos -Clicks "150@415,372"
+scripts\shot.ps1 mathstorm -Loud
 ```
 
-`tools\run_pipeline.py` expects the pcrecomp checkout as a sibling directory
+`scripts\run_pipeline.py` expects the pcrecomp checkout as a sibling directory
 (`../tools`).
+
+### Adding a title
+
+A directory under `titles/` with a `title.json` naming the executable, and that
+game's `original/` beside it. Nothing in `engine/` or `scripts/` needs editing:
+the bridge table is a superset and binds whichever imports the binary in front of
+it actually has, so a new game costs a manifest plus whatever it turns out to
+need that nothing before it did.
 
 ### Knobs
 
@@ -286,26 +328,15 @@ scripts\shot.ps1 -At 150 -Clicks "145@415,372"   # and click a button
 ## Layout
 
 ```
-original/     your copy of the CD (not in this repo)
-src/engine/   the runtime: memory model, IAT bridges, WinG shim, audio
-src/recomp/   generated C (not in this repo -- regenerate it)
-tools/        run_pipeline.py, the lift driver
-scripts/      build.ps1, shot.ps1
-work/         scratch: logs, screenshots, the built exe
+engine/           the shared runtime: memory model, IAT bridges, WinG, audio
+scripts/          run_pipeline.py, build.ps1, shot.ps1 -- each takes a title
+titles/<title>/
+  title.json      which binary, and what the game is called
+  original/       your copy of that disc (not in this repo)
+  gen/            generated C (not in this repo -- regenerate it)
+  work/           scratch: the built exe, logs, screenshots
+docs/
 ```
-
-## The rest of the family
-
-Gizmos & Gadgets was chosen first because it is the biggest of the Windows
-Super Solvers CD re-releases, so whatever it needs the others probably need
-too. The same engine shipped, at least, as:
-
-Operation Neptune (done), Treasure Mountain!, Treasure MathStorm!, Treasure
-Cove!, Treasure Galaxy!, Midnight Rescue!, OutNumbered!, Spellbound!, and
-Mission T.H.I.N.K.
-
-Each is a different `*WIN32.EXE` against the same runtime. Confirming that is
-the next step, and it is the reason this project exists.
 
 ## License
 
