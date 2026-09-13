@@ -305,7 +305,6 @@ static const struct { const char *dll, *name; int argc; } g_passthrough[] = {
     {"gdi32",  "GetStockObject",           1},
     {"gdi32",  "GetSystemPaletteEntries",  4},
     {"gdi32",  "GetSystemPaletteUse",      1},
-    {"gdi32",  "RealizePalette",           1},
     {"gdi32",  "SelectObject",             2},
     {"gdi32",  "SelectPalette",            3},
     {"gdi32",  "SetPaletteEntries",        4},
@@ -441,6 +440,30 @@ static const struct { const char *dll, *name; int argc; } g_passthrough[] = {
     {"user32",   "ReleaseCapture",         0},
     {"user32",   "SetWindowTextA",         2},
     {"user32",   "WinHelpA",               4},
+
+    /* --- Treasure Cove's additions ---
+     *
+     * The earliest of these builds and the closest to Neptune: resource DLLs
+     * rather than .DAT archives, CheckSound/CheckDisplay in its .INI, and real
+     * GDI blitting alongside WinG. Most of what is new here is what Neptune
+     * used and Gizmos & Gadgets did not -- the superset earns its name. */
+    {"gdi32",    "BitBlt",                 9},
+    {"gdi32",    "CreateBitmap",           5},
+    {"gdi32",    "CreateCompatibleDC",     1},
+    {"gdi32",    "GetNearestPaletteIndex", 2},
+    {"gdi32",    "GetTextMetricsA",        2},
+    {"user32",   "CreatePopupMenu",        0},
+    {"user32",   "FrameRect",              3},
+    {"user32",   "GetMenu",                1},
+    {"user32",   "IsDlgButtonChecked",     2},
+    {"user32",   "MoveWindow",             5},
+    {"user32",   "OffsetRect",             3},
+    {"user32",   "SendMessageA",           4},
+    {"user32",   "SetFocus",               1},
+    {"kernel32", "CreateSemaphoreA",       4},
+    {"kernel32", "lstrcatA",               2},
+    {"kernel32", "lstrcmpA",               2},
+    {"kernel32", "lstrcpyA",               2},
 };
 
 /* ===================================================================
@@ -467,6 +490,53 @@ static void bridge_VirtualFree(void) { gg_heap_free(ARG(1)); eax = 1; esp += 4 +
 
 /* GlobalSize: the heap already tracks it, which is the whole reason the game's
  * allocations come from ours rather than the host's. */
+/* LocalAlloc/LocalFree hand back a pointer the same way GlobalAlloc does, so
+ * they come from the same low heap for the same reason. Windows has made Local
+ * and Global the same heap since NT; this makes them the same here too. */
+static void bridge_LocalAlloc(void) { eax = gg_heap_alloc(ARG(2)); esp += 4 + 8; }
+static void bridge_LocalFree(void)  { gg_heap_free(ARG(1)); eax = 0; esp += 4 + 4; }
+
+/* Neptune-era memory bookkeeping: a handle IS the pointer here (see
+ * GlobalAlloc), so Handle is identity and Compact always has room. */
+static void bridge_GlobalHandle(void)  { eax = ARG(1); esp += 4 + 4; }
+static void bridge_GlobalCompact(void) { eax = 0x00400000u; esp += 4 + 4; }
+
+/*
+ * wsprintfA -- the only varargs import in any of these games, and the only
+ * CDECL one, so it is the only place the CALLER cleans the stack. Popping the
+ * arguments here as if it were stdcall would unbalance every caller.
+ *
+ * The arguments themselves cannot be forwarded as they sit: the game pushed
+ * dwords and the host's va_list walks 8-byte slots. So they are widened into a
+ * host-side array and wvsprintfA is handed that.
+ *
+ * Widening is safe for every conversion wsprintfA has, because it has no
+ * floating point at all -- that is documented, not an assumption -- so each
+ * conversion consumes exactly one dword there and one slot here. A %s argument
+ * is a 32-bit VA, and the image and heap are both mapped below 4 GB, so it is
+ * already a host pointer.
+ */
+#define WSPRINTF_MAX_ARGS 32
+
+static void bridge_wsprintfA(void) {
+    char *out = (char *)(uintptr_t)ADDR(ARG(1));
+    const char *fmt = (const char *)(uintptr_t)ADDR(ARG(2));
+    uintptr_t slots[WSPRINTF_MAX_ARGS];
+    int n = 0;
+    const char *p;
+
+    for (p = fmt; *p && n < WSPRINTF_MAX_ARGS; p++) {
+        if (*p != '%') continue;
+        if (p[1] == '%') { p++; continue; }
+        slots[n] = (uintptr_t)ARG(3 + n);
+        n++;
+    }
+    memset(slots + n, 0, sizeof(slots) - n * sizeof(slots[0]));
+
+    eax = (u32)wvsprintfA(out, fmt, (va_list)slots);
+    esp += 4;     /* CDECL: the caller pops its own arguments */
+}
+
 static void bridge_GlobalSize(void) { eax = gg_heap_size(ARG(1)); esp += 4 + 4; }
 
 /*
@@ -557,6 +627,30 @@ static int is_answered_probe(const char *path) {
     for (i = 0; i < sizeof(names) / sizeof(names[0]); i++)
         if (_stricmp(slash ? slash + 1 : path, names[i]) == 0) return 1;
     return 0;
+}
+
+/*
+ * OpenFile, which is how Treasure Cove -- the oldest build here -- opens
+ * everything, including the resource DLLs it will not start without.
+ *
+ * OFSTRUCT is 136 bytes either way (four words and a 128-byte path), so the
+ * struct itself could pass straight through; this exists for the trace. "Could
+ * not find Resource File!" says nothing about WHICH file, and the answer turned
+ * out to be a path, not a resource.
+ */
+static void bridge_OpenFile(void) {
+    const char *path = (const char *)(uintptr_t)ADDR(ARG(1));
+    HFILE f = OpenFile(path, (OFSTRUCT *)(uintptr_t)ADDR(ARG(2)), ARG(3));
+    if (f == HFILE_ERROR && is_answered_probe(path)) {
+        f = _lopen("NUL", OF_READ);
+        if (file_trace())
+            fprintf(stderr, "  FILE: OpenFile            %s   <-- answered with NUL "
+                            "(a 1996 environment probe this runtime already satisfies)\n", path);
+    } else {
+        report_file("OpenFile", path, f != HFILE_ERROR);
+    }
+    eax = (u32)f;
+    esp += 4 + 12;
 }
 
 static void bridge_lopen(void) {
@@ -1129,19 +1223,16 @@ static void bridge_WinGGetDIBPointer(void) {
  * GDI needs the table as well as us: it is what TextOutA maps its colours
  * through when it draws into an 8bpp DIB section. The game sets the palette
  * once and expects every page to have it, so it goes to all of them. */
-static void bridge_WinGSetDIBColorTable(void) {
-    u32 start = ARG(2), n = ARG(3), src = ARG(4), i;
-    int k;
+/* Push g_wing_pal[start..start+n) into every WinG bitmap's colour table.
+ *
+ * SetDIBColorTable works on whatever is SELECTED into the DC it is given, so
+ * reaching every page means having every page selected somewhere. The page the
+ * game has selected is done through its own DC -- a bitmap cannot be in two DCs
+ * at once, so borrowing it would fail -- and the rest through a scratch DC. */
+static void wing_apply_palette(u32 start, u32 n) {
     static HDC scratch;
-
-    for (i = 0; i < n && start + i < 256; i++)
-        g_wing_pal[start + i] = MEM32(src + i * 4);
-
-    /* SetDIBColorTable works on whatever is SELECTED into the DC it is given,
-     * so reaching every page means having every page selected somewhere. The
-     * page the game has selected is done through its own DC -- a bitmap cannot
-     * be in two DCs at once, so borrowing it would fail -- and the rest are
-     * done through a scratch DC of ours. */
+    int k;
+    if (!n) return;
     if (!scratch) scratch = CreateCompatibleDC(NULL);
     for (k = 0; k < g_wing_n; k++) {
         wing_bmp_t *b = &g_wing[k];
@@ -1157,15 +1248,25 @@ static void bridge_WinGSetDIBColorTable(void) {
         SetDIBColorTable(scratch, start, n, (const RGBQUAD *)&g_wing_pal[start]);
         SelectObject(scratch, prev);
     }
-    /* How many of the 256 entries are not black. A 1996 title screen fades in
-     * by ramping this table up from zero, so "the picture is black" and "the
-     * fade has not started" look identical on screen and different here. */
-    {
-        int nz = 0;
-        for (i = 0; i < 256; i++) if (g_wing_pal[i] & 0x00FFFFFFu) nz++;
-        fprintf(stderr, "    WinG: SetDIBColorTable(%u..%u) -> %d of 256 entries lit\n",
-                start, start + n - 1, nz);
+}
+
+/* How many of the 256 are not black. A title screen fades in by ramping this
+ * table up from zero, so "the picture is black" and "the fade has not started"
+ * look identical on screen and different here. */
+static void wing_report_palette(const char *who, u32 start, u32 n) {
+    int nz = 0, i;
+    for (i = 0; i < 256; i++) if (g_wing_pal[i] & 0x00FFFFFFu) nz++;
+    fprintf(stderr, "    WinG: %s(%u..%u) -> %d of 256 entries lit\n",
+            who, start, start + n - 1, nz);
+}
+
+static void bridge_WinGSetDIBColorTable(void) {
+    u32 start = ARG(2), n = ARG(3), src = ARG(4), i;
+    for (i = 0; i < n && start + i < 256; i++) {
+        g_wing_pal[start + i] = MEM32(src + i * 4);
     }
+    wing_apply_palette(start, n);
+    wing_report_palette("SetDIBColorTable", start, n);
     eax = n;
     esp += 4 + 16;
 }
@@ -1176,6 +1277,57 @@ static void bridge_WinGGetDIBColorTable(void) {
         MEM32(dst + i * 4) = g_wing_pal[start + i];
     eax = n;
     esp += 4 + 16;
+}
+
+/*
+ * RealizePalette, which on the display this was written for is what put the
+ * colours on the screen.
+ *
+ * Treasure Cove -- the oldest build here, and the one closest to Neptune --
+ * drives colour through a LOGICAL palette: eleven CreatePalette calls, a
+ * SelectPalette, a RealizePalette, and 268 GetNearestPaletteIndex lookups to
+ * turn RGB into indices. It tells WinG about only nineteen entries. On an 8bpp
+ * display that was enough, because realizing the palette is what the other 237
+ * came from.
+ *
+ * Here the blit is an 8bpp DIB onto a 32bpp screen, and the DIB's own colour
+ * table is the only thing that decides what an index looks like -- so the title
+ * screen came out correct in every shape and posterised into nineteen colours.
+ *
+ * So realizing a palette copies it into the DIB tables -- but only a FULL one.
+ * Windows' stock palette has twenty entries, and every DC has it selected by
+ * default; Gizmos & Gadgets realizes a palette once a frame and would otherwise
+ * have had the first twenty entries of its own good table overwritten by it
+ * every time. A game that drives colour this way builds all 256.
+ */
+static void palette_to_wing(HDC dc) {
+    HPALETTE pal = (HPALETTE)GetCurrentObject(dc, OBJ_PAL);
+    PALETTEENTRY pe[256];
+    UINT n, i;
+    int changed = 0;
+
+    if (!pal) return;
+    n = GetPaletteEntries(pal, 0, 256, pe);
+    if (n < 256) return;
+    for (i = 0; i < n && i < 256; i++) {
+        u32 q;
+        /* PALETTEENTRY is R,G,B,flags; RGBQUAD is B,G,R,0. */
+        q = ((u32)pe[i].peRed << 16) | ((u32)pe[i].peGreen << 8) | (u32)pe[i].peBlue;
+        if (g_wing_pal[i] == q) continue;
+        g_wing_pal[i] = q;
+        changed = 1;
+    }
+    if (changed) {
+        wing_apply_palette(0, 256);
+        wing_report_palette("RealizePalette", 0, 256);
+    }
+}
+
+static void bridge_RealizePalette(void) {
+    HDC dc = (HDC)(uintptr_t)ARG(1);
+    eax = (u32)RealizePalette(dc);
+    palette_to_wing(dc);
+    esp += 4 + 4;
 }
 
 static void wing_blit(HDC dst, HDC src, int dx, int dy, int w, int h,
@@ -1325,6 +1477,28 @@ static void bridge_GetProcAddress(void) {
             if (hit) {
                 eax = alloc_bridge(g_wing_exports[i].name, g_wing_exports[i].fn,
                                    g_wing_exports[i].argc);
+                break;
+            }
+        }
+    } else if (!by_ord) {
+        /*
+         * A real Win32 name, resolved at runtime rather than imported.
+         *
+         * The address has to be one the lifted code can CALL, so it cannot be
+         * the host's -- it has to be a bridge. Any name already bound out of
+         * the import table has one, with the right argument count on it, so
+         * that is what comes back.
+         *
+         * Treasure Cove asks for "GetProcAddress" itself and then calls the
+         * result, which is a perfectly ordinary way to check you are on the
+         * Win32 you think you are. Answering 0 sent it to a call through null,
+         * and it gave up with "Could not find Resource File!" -- which is what
+         * a bad answer here looks like from the outside: nothing to do with
+         * resources.
+         */
+        for (i = 0; i < (size_t)num_bridges; i++) {
+            if (bridges[i].name && strcmp(name, bridges[i].name) == 0) {
+                eax = BRIDGE_BASE + (u32)i;
                 break;
             }
         }
@@ -1932,6 +2106,11 @@ void setup_iat_bridges(void) {
     bind("VirtualFree",              bridge_VirtualFree,              NULL, 3);
     bind("GlobalSize",               bridge_GlobalSize,               NULL, 1);
     bind("GlobalMemoryStatus",       bridge_GlobalMemoryStatus,       NULL, 1);
+    bind("GlobalHandle",             bridge_GlobalHandle,             NULL, 1);
+    bind("GlobalCompact",            bridge_GlobalCompact,            NULL, 1);
+    bind("LocalAlloc",               bridge_LocalAlloc,               NULL, 2);
+    bind("LocalFree",                bridge_LocalFree,                NULL, 1);
+    bind("wsprintfA",                bridge_wsprintfA,                NULL, 0);
 
     bind("InitializeCriticalSection", bridge_InitializeCriticalSection, NULL, 1);
     bind("EnterCriticalSection",      bridge_EnterCriticalSection,      NULL, 1);
@@ -1939,8 +2118,10 @@ void setup_iat_bridges(void) {
 
     bind("GetSystemMetrics",         bridge_GetSystemMetrics,         NULL, 1);
     bind("GetDeviceCaps",            bridge_GetDeviceCaps,            NULL, 2);
+    bind("RealizePalette",           bridge_RealizePalette,           NULL, 1);
     bind("GetWindowRect",            bridge_GetWindowRect,            NULL, 2);
     bind("_lopen",                   bridge_lopen,                    NULL, 2);
+    bind("OpenFile",                 bridge_OpenFile,                 NULL, 3);
     bind("GetModuleFileNameA",       bridge_GetModuleFileNameA,       NULL, 3);
     bind("GetPrivateProfileStringA", bridge_GetPrivateProfileStringA, NULL, 6);
     bind("CreateFileA",              bridge_CreateFileA,              NULL, 7);

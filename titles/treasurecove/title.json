@@ -1,0 +1,6 @@
+{
+  "name": "Super Solvers: Treasure Cove!",
+  "publisher": "The Learning Company, 1992; Windows CD re-release 1996",
+  "exe": "original/TCVWINCD/TCVWIN32.EXE",
+  "disc": "the whole CD, so that TCVWINCD is under original/"
+}
